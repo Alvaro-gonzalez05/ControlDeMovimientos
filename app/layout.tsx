@@ -42,21 +42,7 @@ export default function RootLayout({
     <html lang="es" className="dark">
       <body className={`font-sans antialiased`}>
         {children}
-        <Toaster 
-          richColors 
-          position="bottom-right"
-          toastOptions={{
-            style: {
-              backdropFilter: 'blur(8px)',
-            },
-          }}
-          // Configuración específica para móvil
-          expand={false}
-          visibleToasts={3}
-          // En móvil aparece centrado con overlay
-          className="md:!bottom-4 md:!right-4"
-          data-mobile-center="true"
-        />
+        <Toaster richColors position="bottom-right" />
         <Analytics />
       </body>
     </html>
