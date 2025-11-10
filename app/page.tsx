@@ -18,7 +18,7 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog"
-import { DollarSign, TrendingUp, Plus, Trash2 } from "lucide-react"
+import { DollarSign, TrendingUp, Plus, Trash2, Calculator } from "lucide-react"
 import { toast } from "sonner"
 import { supabase, convertirMovimientoFromDB, convertirMovimientoToDB } from "@/lib/supabase"
 
@@ -39,6 +39,17 @@ interface Movimiento {
   porcentaje: number
 }
 
+interface SimulacionDia {
+  dia: number
+  capitalInicial: number
+  cantidadDolares: number
+  totalVenta: number
+  comision: number
+  montoFinal: number
+  ganancia: number
+  porcentaje: number
+}
+
 export default function Home() {
   const [movimientos, setMovimientos] = useState<Movimiento[]>([])
   const [loading, setLoading] = useState(true)
@@ -50,6 +61,18 @@ export default function Home() {
   const [comisionPorcentaje, setComisionPorcentaje] = useState("")
   const [montoFinalDirecto, setMontoFinalDirecto] = useState("")
   const [modalOpen, setModalOpen] = useState(false)
+
+  // Estados para simulación
+  const [modalSimulacionOpen, setModalSimulacionOpen] = useState(false)
+  const [simCapitalInicial, setSimCapitalInicial] = useState("")
+  const [simPrecioCompra, setSimPrecioCompra] = useState("")
+  const [simPrecioVenta, setSimPrecioVenta] = useState("")
+  const [simTieneComision, setSimTieneComision] = useState(false)
+  const [simComisionPorcentaje, setSimComisionPorcentaje] = useState("")
+  const [simReinvertir, setSimReinvertir] = useState(true)
+  const [simDias, setSimDias] = useState("")
+  const [resultadosSimulacion, setResultadosSimulacion] = useState<SimulacionDia[]>([])
+  const [mostrarResultados, setMostrarResultados] = useState(false)
 
   // Cargar movimientos al inicio
   useEffect(() => {
@@ -288,6 +311,87 @@ export default function Home() {
     setModalOpen(true)
   }
 
+  const calcularSimulacion = (e: React.FormEvent) => {
+    e.preventDefault()
+
+    const capitalInicial = parsearNumero(simCapitalInicial)
+    const precioCompra = parsearNumero(simPrecioCompra)
+    const precioVenta = parsearNumero(simPrecioVenta)
+    const comision = simTieneComision ? parsearNumero(simComisionPorcentaje) : 0
+    const dias = Number.parseInt(simDias)
+
+    if (isNaN(capitalInicial) || isNaN(precioCompra) || isNaN(precioVenta) || isNaN(dias) || dias <= 0) {
+      toast.error("Por favor completa todos los campos correctamente")
+      return
+    }
+
+    if (simTieneComision && isNaN(comision)) {
+      toast.error("Por favor ingresa un porcentaje de comisión válido")
+      return
+    }
+
+    const resultados: SimulacionDia[] = []
+    let capitalActual = capitalInicial
+
+    for (let i = 1; i <= dias; i++) {
+      // Calcular compra de dólares
+      const cantidadDolares = capitalActual / precioCompra
+      
+      // Calcular venta
+      const totalVenta = cantidadDolares * precioVenta
+      
+      // Calcular comisión
+      const montoComision = simTieneComision ? (totalVenta * comision) / 100 : 0
+      const montoFinal = totalVenta - montoComision
+      
+      // Calcular ganancia
+      const ganancia = montoFinal - capitalActual
+      const porcentaje = (ganancia / capitalActual) * 100
+
+      resultados.push({
+        dia: i,
+        capitalInicial: capitalActual,
+        cantidadDolares,
+        totalVenta,
+        comision: montoComision,
+        montoFinal,
+        ganancia,
+        porcentaje
+      })
+
+      // Si reinvierte, el capital del próximo día es el monto final
+      if (simReinvertir) {
+        capitalActual = montoFinal
+      }
+      // Si no reinvierte, mantiene el capital inicial original
+      else {
+        capitalActual = capitalInicial
+      }
+    }
+
+    setResultadosSimulacion(resultados)
+    setMostrarResultados(true)
+    
+    const gananciaTotal = resultados[resultados.length - 1].montoFinal - capitalInicial
+    const porcentajeTotal = ((resultados[resultados.length - 1].montoFinal - capitalInicial) / capitalInicial) * 100
+    
+    toast.success("Simulación calculada", {
+      description: `Ganancia proyectada: $${gananciaTotal.toFixed(2)} (${porcentajeTotal.toFixed(2)}%)`,
+    })
+  }
+
+  const limpiarSimulacion = () => {
+    setSimCapitalInicial("")
+    setSimPrecioCompra("")
+    setSimPrecioVenta("")
+    setSimTieneComision(false)
+    setSimComisionPorcentaje("")
+    setSimReinvertir(true)
+    setSimDias("")
+    setResultadosSimulacion([])
+    setMostrarResultados(false)
+  }
+
   const gananciaTotal = movimientos.reduce((sum, m) => sum + m.ganancia, 0)
   const promedioGanancia = movimientos.length > 0 ? gananciaTotal / movimientos.length : 0
 
@@ -302,13 +406,254 @@ export default function Home() {
               <p className="text-pretty text-muted-foreground">Gestiona tus movimientos de compra y venta de dólares</p>
             </div>
           </div>
-          <Dialog open={modalOpen} onOpenChange={setModalOpen}>
-            <DialogTrigger asChild>
-              <Button size="lg">
-                <Plus className="mr-2 size-4" />
-                Nuevo Movimiento
-              </Button>
-            </DialogTrigger>
+          <div className="flex gap-2">
+            <Dialog open={modalSimulacionOpen} onOpenChange={(open) => {
+              setModalSimulacionOpen(open)
+              if (!open) {
+                limpiarSimulacion()
+              }
+            }}>
+              <DialogTrigger asChild>
+                <Button size="lg" variant="outline">
+                  <Calculator className="mr-2 size-4" />
+                  Simulación de Ganancias
+                </Button>
+              </DialogTrigger>
+              <DialogContent className={`max-h-[90vh] overflow-y-auto ${mostrarResultados ? '!max-w-[98vw] w-[98vw]' : 'max-w-2xl'}`}>
+                <DialogHeader>
+                  <DialogTitle>Simulación de Ganancias</DialogTitle>
+                  <DialogDescription>
+                    Simula tus ganancias proyectadas con o sin reinversión
+                  </DialogDescription>
+                </DialogHeader>
+                {!mostrarResultados ? (
+                  <form onSubmit={calcularSimulacion} className="space-y-4">
+                    <div className="space-y-2">
+                      <Label htmlFor="simCapitalInicial">Capital Inicial ($)</Label>
+                      <Input
+                        id="simCapitalInicial"
+                        type="text"
+                        placeholder="Ej: 100.000"
+                        value={simCapitalInicial}
+                        onChange={(e) => handleNumeroChange(e.target.value, setSimCapitalInicial)}
+                        required
+                      />
+                      <p className="text-xs text-muted-foreground">
+                        Capital con el que comenzarás la simulación
+                      </p>
+                    </div>
+
+                    <div className="grid gap-4 md:grid-cols-2">
+                      <div className="space-y-2">
+                        <Label htmlFor="simPrecioCompra">Precio de Compra del Dólar ($)</Label>
+                        <Input
+                          id="simPrecioCompra"
+                          type="text"
+                          placeholder="Ej: 1.000"
+                          value={simPrecioCompra}
+                          onChange={(e) => handleNumeroChange(e.target.value, setSimPrecioCompra)}
+                          required
+                        />
+                      </div>
+                      <div className="space-y-2">
+                        <Label htmlFor="simPrecioVenta">Precio de Venta del Dólar ($)</Label>
+                        <Input
+                          id="simPrecioVenta"
+                          type="text"
+                          placeholder="Ej: 1.050"
+                          value={simPrecioVenta}
+                          onChange={(e) => handleNumeroChange(e.target.value, setSimPrecioVenta)}
+                          required
+                        />
+                      </div>
+                    </div>
+
+                    <div className="flex items-center space-x-2">
+                      <Checkbox
+                        id="simComision"
+                        checked={simTieneComision}
+                        onCheckedChange={(checked) => setSimTieneComision(checked as boolean)}
+                      />
+                      <Label htmlFor="simComision" className="cursor-pointer">
+                        Hay comisión en las ventas
+                      </Label>
+                    </div>
+
+                    {simTieneComision && (
+                      <div className="space-y-2">
+                        <Label htmlFor="simComisionPorcentaje">Porcentaje de Comisión (%)</Label>
+                        <Input
+                          id="simComisionPorcentaje"
+                          type="text"
+                          placeholder="Ej: 2.5"
+                          value={simComisionPorcentaje}
+                          onChange={(e) => handleNumeroChange(e.target.value, setSimComisionPorcentaje)}
+                          required={simTieneComision}
+                        />
+                        <p className="text-xs text-muted-foreground">Porcentaje cobrado sobre el total de la venta</p>
+                      </div>
+                    )}
+
+                    <div className="flex items-center space-x-2">
+                      <Checkbox
+                        id="simReinvertir"
+                        checked={simReinvertir}
+                        onCheckedChange={(checked) => setSimReinvertir(checked as boolean)}
+                      />
+                      <Label htmlFor="simReinvertir" className="cursor-pointer">
+                        Reinvertir capital + ganancia en cada ciclo
+                      </Label>
+                    </div>
+
+                    <div className="space-y-2">
+                      <Label htmlFor="simDias">Número de Días/Ciclos</Label>
+                      <Input
+                        id="simDias"
+                        type="number"
+                        placeholder="Ej: 30"
+                        value={simDias}
+                        onChange={(e) => setSimDias(e.target.value)}
+                        required
+                        min="1"
+                      />
+                      <p className="text-xs text-muted-foreground">
+                        Cantidad de veces que realizarás la operación
+                      </p>
+                    </div>
+
+                    <Button type="submit" className="w-full">
+                      <Calculator className="mr-2 size-4" />
+                      Calcular Simulación
+                    </Button>
+                  </form>
+                ) : (
+                  <div className="space-y-4">
+                    <div className="grid gap-4 md:grid-cols-3">
+                      <Card>
+                        <CardHeader className="pb-2">
+                          <CardTitle className="text-sm">Capital Inicial</CardTitle>
+                        </CardHeader>
+                        <CardContent>
+                          <div className="text-xl font-bold">
+                            ${resultadosSimulacion[0].capitalInicial.toLocaleString("es-AR", {
+                              minimumFractionDigits: 2,
+                              maximumFractionDigits: 2,
+                            })}
+                          </div>
+                        </CardContent>
+                      </Card>
+                      <Card>
+                        <CardHeader className="pb-2">
+                          <CardTitle className="text-sm">Capital Final</CardTitle>
+                        </CardHeader>
+                        <CardContent>
+                          <div className="text-xl font-bold text-accent">
+                            ${resultadosSimulacion[resultadosSimulacion.length - 1].montoFinal.toLocaleString("es-AR", {
+                              minimumFractionDigits: 2,
+                              maximumFractionDigits: 2,
+                            })}
+                          </div>
+                        </CardContent>
+                      </Card>
+                      <Card>
+                        <CardHeader className="pb-2">
+                          <CardTitle className="text-sm">Ganancia Total</CardTitle>
+                        </CardHeader>
+                        <CardContent>
+                          <div className="text-xl font-bold text-accent">
+                            ${(resultadosSimulacion[resultadosSimulacion.length - 1].montoFinal - resultadosSimulacion[0].capitalInicial).toLocaleString("es-AR", {
+                              minimumFractionDigits: 2,
+                              maximumFractionDigits: 2,
+                            })}
+                          </div>
+                          <p className="text-xs text-muted-foreground mt-1">
+                            {(((resultadosSimulacion[resultadosSimulacion.length - 1].montoFinal - resultadosSimulacion[0].capitalInicial) / resultadosSimulacion[0].capitalInicial) * 100).toFixed(2)}% total
+                          </p>
+                        </CardContent>
+                      </Card>
+                    </div>
+
+                    <div className="overflow-x-auto max-h-96 overflow-y-auto border rounded-lg">
+                      <Table>
+                        <TableHeader className="sticky top-0 bg-background">
+                          <TableRow>
+                            <TableHead>Día</TableHead>
+                            <TableHead className="text-right">Capital Inicial</TableHead>
+                            <TableHead className="text-right">USD Comprados</TableHead>
+                            <TableHead className="text-right">Total Venta</TableHead>
+                            <TableHead className="text-right">Comisión</TableHead>
+                            <TableHead className="text-right">Monto Final</TableHead>
+                            <TableHead className="text-right">Ganancia</TableHead>
+                            <TableHead className="text-right">%</TableHead>
+                          </TableRow>
+                        </TableHeader>
+                        <TableBody>
+                          {resultadosSimulacion.map((dia) => (
+                            <TableRow key={dia.dia}>
+                              <TableCell className="font-medium">Día {dia.dia}</TableCell>
+                              <TableCell className="text-right">
+                                ${dia.capitalInicial.toLocaleString("es-AR", {
+                                  minimumFractionDigits: 2,
+                                  maximumFractionDigits: 2,
+                                })}
+                              </TableCell>
+                              <TableCell className="text-right">
+                                ${dia.cantidadDolares.toLocaleString("es-AR", {
+                                  minimumFractionDigits: 2,
+                                  maximumFractionDigits: 2,
+                                })}
+                              </TableCell>
+                              <TableCell className="text-right">
+                                ${dia.totalVenta.toLocaleString("es-AR", {
+                                  minimumFractionDigits: 2,
+                                  maximumFractionDigits: 2,
+                                })}
+                              </TableCell>
+                              <TableCell className="text-right">
+                                ${dia.comision.toLocaleString("es-AR", {
+                                  minimumFractionDigits: 2,
+                                  maximumFractionDigits: 2,
+                                })}
+                              </TableCell>
+                              <TableCell className="text-right font-medium">
+                                ${dia.montoFinal.toLocaleString("es-AR", {
+                                  minimumFractionDigits: 2,
+                                  maximumFractionDigits: 2,
+                                })}
+                              </TableCell>
+                              <TableCell className="text-right font-semibold text-accent">
+                                ${dia.ganancia.toLocaleString("es-AR", {
+                                  minimumFractionDigits: 2,
+                                  maximumFractionDigits: 2,
+                                })}
+                              </TableCell>
+                              <TableCell className="text-right font-semibold text-accent">
+                                +{dia.porcentaje.toFixed(2)}%
+                              </TableCell>
+                            </TableRow>
+                          ))}
+                        </TableBody>
+                      </Table>
+                    </div>
+
+                    <Button 
+                      onClick={() => setMostrarResultados(false)} 
+                      variant="outline" 
+                      className="w-full"
+                    >
+                      Nueva Simulación
+                    </Button>
+                  </div>
+                )}
+              </DialogContent>
+            </Dialog>
+            <Dialog open={modalOpen} onOpenChange={setModalOpen}>
+              <DialogTrigger asChild>
+                <Button size="lg">
+                  <Plus className="mr-2 size-4" />
+                  Nuevo Movimiento
+                </Button>
+              </DialogTrigger>
             <DialogContent className="max-w-2xl">
               <DialogHeader>
                 <DialogTitle>Nuevo Movimiento</DialogTitle>
@@ -424,6 +769,7 @@ export default function Home() {
               </form>
             </DialogContent>
           </Dialog>
+          </div>
         </div>
 
         <div className="grid gap-4 md:grid-cols-3">
