@@ -26,6 +26,11 @@ export interface MovimientoDB {
   porcentaje: number
   created_at: string
   updated_at: string
+  participaciones?: {
+    id: number
+    nombre: string
+    monto_invertido: number
+  }[]
 }
 
 // Función para convertir de la BD al formato de la app
@@ -45,6 +50,7 @@ export const convertirMovimientoFromDB = (movimientoDB: MovimientoDB) => {
     montoFinal: movimientoDB.monto_final,
     ganancia: movimientoDB.ganancia,
     porcentaje: movimientoDB.porcentaje,
+    participaciones: movimientoDB.participaciones || []
   }
 }
 

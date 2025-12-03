@@ -18,7 +18,8 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog"
-import { DollarSign, TrendingUp, Plus, Trash2, Calculator } from "lucide-react"
+import { HoverCard, HoverCardContent, HoverCardTrigger } from "@/components/ui/hover-card"
+import { DollarSign, TrendingUp, Plus, Trash2, Calculator, Users, FileText } from "lucide-react"
 import { toast } from "sonner"
 import { supabase, convertirMovimientoFromDB, convertirMovimientoToDB } from "@/lib/supabase"
 
@@ -37,6 +38,16 @@ interface Movimiento {
   montoFinal: number
   ganancia: number
   porcentaje: number
+  participaciones?: {
+    id: number
+    nombre: string
+    monto_invertido: number
+  }[]
+}
+
+interface Participante {
+  nombre: string
+  monto: number
 }
 
 interface SimulacionDia {
@@ -62,6 +73,16 @@ export default function Home() {
   const [montoFinalDirecto, setMontoFinalDirecto] = useState("")
   const [modalOpen, setModalOpen] = useState(false)
 
+  // Estados para detalles
+  const [modalDetallesOpen, setModalDetallesOpen] = useState(false)
+  const [movimientoSeleccionado, setMovimientoSeleccionado] = useState<Movimiento | null>(null)
+
+  // Estados para participantes
+  const [participantes, setParticipantes] = useState<Participante[]>([])
+  const [nuevoParticipanteNombre, setNuevoParticipanteNombre] = useState("")
+  const [nuevoParticipanteMonto, setNuevoParticipanteMonto] = useState("")
+  const [usarRedondeo, setUsarRedondeo] = useState(false)
+
   // Estados para simulación
   const [modalSimulacionOpen, setModalSimulacionOpen] = useState(false)
   const [simCapitalInicial, setSimCapitalInicial] = useState("")
@@ -84,7 +105,7 @@ export default function Home() {
       setLoading(true)
       const { data, error } = await supabase
         .from('movimientos')
-        .select('*')
+        .select('*, participaciones(*)')
         .order('created_at', { ascending: false })
 
       if (error) {
@@ -165,6 +186,45 @@ export default function Home() {
     }
   }
 
+  const agregarParticipante = () => {
+    const monto = parsearNumero(nuevoParticipanteMonto)
+    if (!nuevoParticipanteNombre || isNaN(monto) || monto <= 0) return
+
+    const nuevosParticipantes = [...participantes, { nombre: nuevoParticipanteNombre, monto }]
+    setParticipantes(nuevosParticipantes)
+    
+    // Actualizar capital invertido automáticamente
+    const totalCapital = nuevosParticipantes.reduce((sum, p) => sum + p.monto, 0)
+    setCapitalInvertido(formatearNumero(totalCapital.toFixed(0)))
+    
+    setNuevoParticipanteNombre("")
+    setNuevoParticipanteMonto("")
+  }
+
+  const eliminarParticipante = (index: number) => {
+    const nuevosParticipantes = participantes.filter((_, i) => i !== index)
+    setParticipantes(nuevosParticipantes)
+    
+    // Actualizar capital invertido
+    const totalCapital = nuevosParticipantes.reduce((sum, p) => sum + p.monto, 0)
+    setCapitalInvertido(formatearNumero(totalCapital.toFixed(0)))
+  }
+
+  const aplicarRedondeo = () => {
+    const capital = parsearNumero(capitalInvertido)
+    const compra = parsearNumero(precioCompra)
+    
+    if (isNaN(capital) || isNaN(compra) || compra <= 0) return
+
+    const dolaresExactos = capital / compra
+    // Redondear a múltiplos de 10 hacia abajo para asegurar efectivo
+    const dolaresRedondeados = Math.floor(dolaresExactos / 10) * 10
+    const costoRedondeado = dolaresRedondeados * compra
+    
+    setCapitalInvertido(formatearNumero(costoRedondeado.toFixed(0)))
+    toast.info(`Capital ajustado para comprar ${dolaresRedondeados} USD exactos`)
+  }
+
   const agregarMovimiento = async (e: React.FormEvent) => {
     e.preventDefault()
 
@@ -213,7 +273,34 @@ export default function Home() {
 
       if (error) throw error
 
+      // Guardar participantes si existen
+      let participacionesGuardadas: any[] = []
+      if (participantes.length > 0) {
+        const participacionesParaDB = participantes.map(p => ({
+          movimiento_id: data.id,
+          nombre: p.nombre,
+          monto_invertido: p.monto
+        }))
+
+        const { data: dataParticipaciones, error: errorParticipantes } = await supabase
+          .from('participaciones')
+          .insert(participacionesParaDB)
+          .select()
+
+        if (errorParticipantes) {
+          console.error('Error guardando participantes:', errorParticipantes)
+          toast.error('Movimiento guardado pero hubo error con los participantes')
+        } else {
+          participacionesGuardadas = dataParticipaciones
+        }
+      }
+
       const movimientoFormateado = convertirMovimientoFromDB(data)
+      // Asignar manualmente las participaciones al estado local para que se vean sin recargar
+      if (participacionesGuardadas.length > 0) {
+        movimientoFormateado.participaciones = participacionesGuardadas
+      }
+      
       setMovimientos([movimientoFormateado, ...movimientos])
 
       toast.success("Movimiento agregado", {
@@ -227,6 +314,9 @@ export default function Home() {
       setTipoComision("porcentaje")
       setComisionPorcentaje("")
       setMontoFinalDirecto("")
+      setParticipantes([])
+      setNuevoParticipanteNombre("")
+      setNuevoParticipanteMonto("")
       setModalOpen(false)
     } catch (error) {
       console.error('Error guardando movimiento:', error)
@@ -306,9 +396,47 @@ export default function Home() {
   }
 
   const reinvertirMovimiento = (movimiento: Movimiento) => {
+    // Calcular nuevo capital total (Capital anterior + Ganancia)
     const nuevoCapital = movimiento.capitalInvertido + movimiento.ganancia
     setCapitalInvertido(formatearNumero(nuevoCapital.toFixed(0)))
+
+    // Si hay participantes, reinvertir sus ganancias también
+    if (movimiento.participaciones && movimiento.participaciones.length > 0) {
+      const totalPool = movimiento.participaciones.reduce((sum, p) => sum + p.monto_invertido, 0)
+      const capitalUsado = movimiento.capitalInvertido
+      const haySobrante = totalPool > capitalUsado
+      const ratioUso = haySobrante ? capitalUsado / totalPool : 1
+
+      const nuevosParticipantes = movimiento.participaciones.map(p => {
+        const parteUsada = p.monto_invertido * ratioUso
+        const vuelto = p.monto_invertido - parteUsada
+        const ganancia = parteUsada * (movimiento.porcentaje / 100)
+        
+        // El nuevo monto es lo que puso + lo que ganó (incluyendo el vuelto que se reinvierte)
+        const nuevoMonto = p.monto_invertido + ganancia
+        
+        return {
+          nombre: p.nombre,
+          monto: nuevoMonto
+        }
+      })
+
+      setParticipantes(nuevosParticipantes)
+      
+      // Recalcular el capital invertido basado en la suma exacta de los participantes
+      // Esto es importante porque la suma de los participantes puede diferir ligeramente por decimales
+      const totalParticipantes = nuevosParticipantes.reduce((sum, p) => sum + p.monto, 0)
+      setCapitalInvertido(formatearNumero(totalParticipantes.toFixed(0)))
+    } else {
+      setParticipantes([])
+    }
+
     setModalOpen(true)
+  }
+
+  const verDetalles = (movimiento: Movimiento) => {
+    setMovimientoSeleccionado(movimiento)
+    setModalDetallesOpen(true)
   }
 
   const calcularSimulacion = (e: React.FormEvent) => {
@@ -647,6 +775,107 @@ export default function Home() {
                 )}
               </DialogContent>
             </Dialog>
+            <Dialog open={modalDetallesOpen} onOpenChange={setModalDetallesOpen}>
+              <DialogContent className="max-w-3xl max-h-[90vh] overflow-y-auto">
+                <DialogHeader>
+                  <DialogTitle>Detalles de la Operación</DialogTitle>
+                  <DialogDescription>Distribución de ganancias y devoluciones</DialogDescription>
+                </DialogHeader>
+                {movimientoSeleccionado && (
+                  <div className="space-y-6">
+                    {/* Resumen General */}
+                    <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                      <div className="space-y-1">
+                        <span className="text-xs text-muted-foreground">Fecha</span>
+                        <div className="font-medium">{movimientoSeleccionado.fecha}</div>
+                      </div>
+                      <div className="space-y-1">
+                        <span className="text-xs text-muted-foreground">Capital Usado</span>
+                        <div className="font-medium">${movimientoSeleccionado.capitalInvertido.toLocaleString("es-AR")}</div>
+                      </div>
+                      <div className="space-y-1">
+                        <span className="text-xs text-muted-foreground">Ganancia Total</span>
+                        <div className="font-bold text-accent">${movimientoSeleccionado.ganancia.toLocaleString("es-AR")}</div>
+                      </div>
+                      <div className="space-y-1">
+                        <span className="text-xs text-muted-foreground">Rendimiento</span>
+                        <div className="font-bold text-accent">+{movimientoSeleccionado.porcentaje.toFixed(2)}%</div>
+                      </div>
+                    </div>
+
+                    {/* Tabla de Distribución */}
+                    {movimientoSeleccionado.participaciones && movimientoSeleccionado.participaciones.length > 0 ? (
+                      <div className="space-y-3">
+                        <h4 className="font-semibold flex items-center gap-2">
+                          <Users className="size-4" />
+                          Distribución a Inversores
+                        </h4>
+                        
+                        <div className="rounded-md border">
+                          <Table>
+                            <TableHeader>
+                              <TableRow>
+                                <TableHead>Inversor</TableHead>
+                                <TableHead className="text-right">Puso</TableHead>
+                                <TableHead className="text-right">Vuelto (No Usado)</TableHead>
+                                <TableHead className="text-right">Ganancia</TableHead>
+                                <TableHead className="text-right font-bold">Total a Recibir</TableHead>
+                              </TableRow>
+                            </TableHeader>
+                            <TableBody>
+                              {(() => {
+                                const totalPool = movimientoSeleccionado.participaciones.reduce((sum, p) => sum + p.monto_invertido, 0)
+                                const capitalUsado = movimientoSeleccionado.capitalInvertido
+                                // Si el pool es mayor al capital usado, hay vuelto proporcional
+                                // Si el pool es menor, asumimos que todo se usó y faltó plata (que puso el dueño)
+                                const haySobrante = totalPool > capitalUsado
+                                const ratioUso = haySobrante ? capitalUsado / totalPool : 1
+
+                                return movimientoSeleccionado.participaciones.map((p) => {
+                                  const parteUsada = p.monto_invertido * ratioUso
+                                  const vuelto = p.monto_invertido - parteUsada
+                                  // La ganancia se calcula sobre la parte efectivamente usada
+                                  const ganancia = parteUsada * (movimientoSeleccionado.porcentaje / 100)
+                                  const totalRecibir = p.monto_invertido + ganancia // = parteUsada + vuelto + ganancia
+
+                                  return (
+                                    <TableRow key={p.id}>
+                                      <TableCell className="font-medium">{p.nombre}</TableCell>
+                                      <TableCell className="text-right text-muted-foreground">
+                                        ${p.monto_invertido.toLocaleString("es-AR")}
+                                      </TableCell>
+                                      <TableCell className="text-right text-orange-500">
+                                        {vuelto > 0 ? `$${vuelto.toLocaleString("es-AR", { maximumFractionDigits: 0 })}` : "-"}
+                                      </TableCell>
+                                      <TableCell className="text-right text-green-500 font-medium">
+                                        +${ganancia.toLocaleString("es-AR", { maximumFractionDigits: 2 })}
+                                      </TableCell>
+                                      <TableCell className="text-right font-bold">
+                                        ${totalRecibir.toLocaleString("es-AR", { maximumFractionDigits: 2 })}
+                                      </TableCell>
+                                    </TableRow>
+                                  )
+                                })
+                              })()}
+                            </TableBody>
+                          </Table>
+                        </div>
+                        
+                        <div className="text-xs text-muted-foreground mt-2">
+                          * El "Vuelto" es la parte del dinero que no se llegó a usar para la compra de dólares (por redondeo).
+                          <br />
+                          * La "Ganancia" se calcula solo sobre el dinero efectivamente invertido.
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="rounded-lg border border-dashed p-8 text-center text-muted-foreground">
+                        No hay inversores registrados en este movimiento.
+                      </div>
+                    )}
+                  </div>
+                )}
+              </DialogContent>
+            </Dialog>
             <Dialog open={modalOpen} onOpenChange={setModalOpen}>
               <DialogTrigger asChild>
                 <Button size="lg">
@@ -654,118 +883,220 @@ export default function Home() {
                   Nuevo Movimiento
                 </Button>
               </DialogTrigger>
-            <DialogContent className="max-w-2xl">
+            <DialogContent className="sm:max-w-[95vw] w-[95vw] max-h-[90vh] overflow-y-auto">
               <DialogHeader>
                 <DialogTitle>Nuevo Movimiento</DialogTitle>
                 <DialogDescription>Registra un nuevo movimiento de compra y venta de dólares</DialogDescription>
               </DialogHeader>
-              <form onSubmit={agregarMovimiento} className="space-y-4">
-                <div className="space-y-2">
-                  <Label htmlFor="capitalInvertido">Capital Invertido ($)</Label>
-                  <Input
-                    id="capitalInvertido"
-                    type="text"
-                    placeholder="Ej: 100.000 (pesos que usaste para comprar dólares)"
-                    value={capitalInvertido}
-                    onChange={(e) => handleNumeroChange(e.target.value, setCapitalInvertido)}
-                    required
-                  />
-                  <p className="text-xs text-muted-foreground">
-                    Cantidad de pesos que invertiste para comprar los dólares
-                  </p>
-                </div>
-                <div className="grid gap-4 md:grid-cols-2">
-                  <div className="space-y-2">
-                    <Label htmlFor="precioCompra">Precio de Compra por Dólar ($)</Label>
-                    <Input
-                      id="precioCompra"
-                      type="text"
-                      placeholder="Ej: 1.000"
-                      value={precioCompra}
-                      onChange={(e) => handleNumeroChange(e.target.value, setPrecioCompra)}
-                      required
-                    />
-                  </div>
-                  <div className="space-y-2">
-                    <Label htmlFor="precioVenta">Precio de Venta por Dólar ($)</Label>
-                    <Input
-                      id="precioVenta"
-                      type="text"
-                      placeholder="Ej: 1.050"
-                      value={precioVenta}
-                      onChange={(e) => handleNumeroChange(e.target.value, setPrecioVenta)}
-                      required
-                    />
-                  </div>
-                </div>
-
-                <div className="flex items-center space-x-2">
-                  <Checkbox
-                    id="comision"
-                    checked={tieneComision}
-                    onCheckedChange={(checked) => setTieneComision(checked as boolean)}
-                  />
-                  <Label htmlFor="comision" className="cursor-pointer">
-                    Se cobró comisión en la venta
-                  </Label>
-                </div>
-
-                {tieneComision && (
-                  <div className="space-y-4 rounded-lg border border-border bg-muted/50 p-4">
-                    <RadioGroup
-                      value={tipoComision}
-                      onValueChange={(value) => setTipoComision(value as "porcentaje" | "montoFinal")}
-                    >
-                      <div className="flex items-center space-x-2">
-                        <RadioGroupItem value="porcentaje" id="porcentaje" />
-                        <Label htmlFor="porcentaje" className="cursor-pointer font-normal">
-                          Ingreso porcentaje de comisión
-                        </Label>
+              <form onSubmit={agregarMovimiento}>
+                <div className="grid gap-6 md:grid-cols-2">
+                  {/* Columna Izquierda: Inversores */}
+                  <div className="space-y-4">
+                    <div className="space-y-4 rounded-lg border border-border bg-muted/30 p-4 h-full">
+                      <div className="flex items-center justify-between">
+                        <Label className="text-base font-semibold">Inversores (Pool)</Label>
+                        <span className="text-xs text-muted-foreground">Opcional</span>
                       </div>
-                      <div className="flex items-center space-x-2">
-                        <RadioGroupItem value="montoFinal" id="montoFinal" />
-                        <Label htmlFor="montoFinal" className="cursor-pointer font-normal">
-                          Ingreso monto final recibido
-                        </Label>
-                      </div>
-                    </RadioGroup>
-
-                    {tipoComision === "porcentaje" ? (
-                      <div className="space-y-2">
-                        <Label htmlFor="comisionPorcentaje">Porcentaje de Comisión (%)</Label>
+                      <div className="flex gap-2">
                         <Input
-                          id="comisionPorcentaje"
-                          type="text"
-                          placeholder="Ej: 2.5"
-                          value={comisionPorcentaje}
-                          onChange={(e) => handleNumeroChange(e.target.value, setComisionPorcentaje)}
-                          required={tieneComision}
+                          placeholder="Nombre"
+                          value={nuevoParticipanteNombre}
+                          onChange={(e) => setNuevoParticipanteNombre(e.target.value)}
+                          className="flex-1"
                         />
-                        <p className="text-xs text-muted-foreground">Porcentaje cobrado sobre el total de la venta</p>
-                      </div>
-                    ) : (
-                      <div className="space-y-2">
-                        <Label htmlFor="montoFinalDirecto">Monto Final Recibido ($)</Label>
                         <Input
-                          id="montoFinalDirecto"
-                          type="text"
-                          placeholder="Ej: 103.000"
-                          value={montoFinalDirecto}
-                          onChange={(e) => handleNumeroChange(e.target.value, setMontoFinalDirecto)}
-                          required={tieneComision}
+                          placeholder="Monto $"
+                          value={nuevoParticipanteMonto}
+                          onChange={(e) => handleNumeroChange(e.target.value, setNuevoParticipanteMonto)}
+                          className="w-32"
                         />
-                        <p className="text-xs text-muted-foreground">
-                          Monto exacto que recibiste después de la comisión
-                        </p>
+                        <Button type="button" onClick={agregarParticipante} variant="secondary">
+                          <Plus className="size-4" />
+                        </Button>
+                      </div>
+                      
+                      {participantes.length > 0 ? (
+                        <div className="space-y-2 max-h-[300px] overflow-y-auto pr-1">
+                          {participantes.map((p, i) => (
+                            <div key={i} className="flex items-center justify-between text-sm bg-background p-2 rounded border">
+                              <span>{p.nombre}</span>
+                              <div className="flex items-center gap-2">
+                                <span className="font-mono">${p.monto.toLocaleString('es-AR')}</span>
+                                <Button
+                                  type="button"
+                                  variant="ghost"
+                                  size="sm"
+                                  className="h-6 w-6 p-0 text-destructive"
+                                  onClick={() => eliminarParticipante(i)}
+                                >
+                                  <Trash2 className="size-3" />
+                                </Button>
+                              </div>
+                            </div>
+                          ))}
+                          <div className="flex justify-between font-bold text-sm pt-2 border-t mt-4">
+                            <span>Total Pool:</span>
+                            <span>${participantes.reduce((sum, p) => sum + p.monto, 0).toLocaleString('es-AR')}</span>
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="flex flex-col items-center justify-center h-32 text-muted-foreground text-sm border-2 border-dashed rounded-lg">
+                          <Users className="size-8 mb-2 opacity-50" />
+                          <p>No hay inversores agregados</p>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Columna Derecha: Datos del Movimiento */}
+                  <div className="space-y-4">
+                    <div className="space-y-2">
+                      <Label htmlFor="capitalInvertido">Capital Invertido ($)</Label>
+                      <div className="flex gap-2">
+                        <Input
+                          id="capitalInvertido"
+                          type="text"
+                          placeholder="Ej: 100.000"
+                          value={capitalInvertido}
+                          onChange={(e) => handleNumeroChange(e.target.value, setCapitalInvertido)}
+                          required
+                        />
+                      </div>
+                      <p className="text-xs text-muted-foreground">
+                        {participantes.length > 0 
+                          ? "Calculado automáticamente del pool (puedes ajustar si es necesario)" 
+                          : "Cantidad de pesos que invertiste para comprar los dólares"}
+                      </p>
+                    </div>
+
+                    <div className="grid gap-4 grid-cols-2">
+                      <div className="space-y-2">
+                        <Label htmlFor="precioCompra">Precio Compra ($)</Label>
+                        <Input
+                          id="precioCompra"
+                          type="text"
+                          placeholder="Ej: 1.000"
+                          value={precioCompra}
+                          onChange={(e) => handleNumeroChange(e.target.value, setPrecioCompra)}
+                          required
+                        />
+                      </div>
+                      <div className="space-y-2">
+                        <Label htmlFor="precioVenta">Precio Venta ($)</Label>
+                        <Input
+                          id="precioVenta"
+                          type="text"
+                          placeholder="Ej: 1.050"
+                          value={precioVenta}
+                          onChange={(e) => handleNumeroChange(e.target.value, setPrecioVenta)}
+                          required
+                        />
+                      </div>
+                    </div>
+
+                    {/* Calculadora de Redondeo */}
+                    {capitalInvertido && precioCompra && (
+                      <div className="rounded-lg border border-blue-200 bg-blue-50 dark:bg-blue-950/20 dark:border-blue-800 p-3 text-sm">
+                        <div className="flex justify-between items-center mb-2">
+                          <span className="font-semibold text-blue-700 dark:text-blue-300">Optimización de Efectivo</span>
+                          <Button 
+                            type="button" 
+                            variant="outline" 
+                            size="sm" 
+                            className="h-7 text-xs"
+                            onClick={aplicarRedondeo}
+                          >
+                            Ajustar a Redondo
+                          </Button>
+                        </div>
+                        <div className="grid grid-cols-2 gap-2 text-xs text-muted-foreground">
+                          <div>Exacto: {(parsearNumero(capitalInvertido) / parsearNumero(precioCompra)).toFixed(2)} USD</div>
+                          <div>Redondo: {(Math.floor(parsearNumero(capitalInvertido) / parsearNumero(precioCompra) / 10) * 10)} USD</div>
+                        </div>
+                        {participantes.length > 0 && (
+                            <div className="mt-2 pt-2 border-t border-blue-200 dark:border-blue-800 text-xs">
+                                <div className="flex justify-between">
+                                    <span>Total Pool:</span>
+                                    <span>${participantes.reduce((sum, p) => sum + p.monto, 0).toLocaleString('es-AR')}</span>
+                                </div>
+                                <div className="flex justify-between font-semibold text-blue-700 dark:text-blue-300">
+                                    <span>Capital a Usar:</span>
+                                    <span>${parsearNumero(capitalInvertido).toLocaleString('es-AR')}</span>
+                                </div>
+                                 <div className="flex justify-between text-orange-600 dark:text-orange-400">
+                                    <span>Sobrante (Devolver):</span>
+                                    <span>${Math.max(0, participantes.reduce((sum, p) => sum + p.monto, 0) - parsearNumero(capitalInvertido)).toLocaleString('es-AR')}</span>
+                                </div>
+                            </div>
+                        )}
                       </div>
                     )}
-                  </div>
-                )}
 
-                <Button type="submit" className="w-full">
-                  <Plus className="mr-2 size-4" />
-                  Agregar Movimiento
-                </Button>
+                    <div className="flex items-center space-x-2">
+                      <Checkbox
+                        id="comision"
+                        checked={tieneComision}
+                        onCheckedChange={(checked) => setTieneComision(checked as boolean)}
+                      />
+                      <Label htmlFor="comision" className="cursor-pointer">
+                        Se cobró comisión en la venta
+                      </Label>
+                    </div>
+
+                    {tieneComision && (
+                      <div className="space-y-4 rounded-lg border border-border bg-muted/50 p-4">
+                        <RadioGroup
+                          value={tipoComision}
+                          onValueChange={(value) => setTipoComision(value as "porcentaje" | "montoFinal")}
+                        >
+                          <div className="flex items-center space-x-2">
+                            <RadioGroupItem value="porcentaje" id="porcentaje" />
+                            <Label htmlFor="porcentaje" className="cursor-pointer font-normal">
+                              % Porcentaje
+                            </Label>
+                          </div>
+                          <div className="flex items-center space-x-2">
+                            <RadioGroupItem value="montoFinal" id="montoFinal" />
+                            <Label htmlFor="montoFinal" className="cursor-pointer font-normal">
+                              $ Monto Final
+                            </Label>
+                          </div>
+                        </RadioGroup>
+
+                        {tipoComision === "porcentaje" ? (
+                          <div className="space-y-2">
+                            <Label htmlFor="comisionPorcentaje">Porcentaje (%)</Label>
+                            <Input
+                              id="comisionPorcentaje"
+                              type="text"
+                              placeholder="Ej: 2.5"
+                              value={comisionPorcentaje}
+                              onChange={(e) => handleNumeroChange(e.target.value, setComisionPorcentaje)}
+                              required={tieneComision}
+                            />
+                          </div>
+                        ) : (
+                          <div className="space-y-2">
+                            <Label htmlFor="montoFinalDirecto">Monto Recibido ($)</Label>
+                            <Input
+                              id="montoFinalDirecto"
+                              type="text"
+                              placeholder="Ej: 103.000"
+                              value={montoFinalDirecto}
+                              onChange={(e) => handleNumeroChange(e.target.value, setMontoFinalDirecto)}
+                              required={tieneComision}
+                            />
+                          </div>
+                        )}
+                      </div>
+                    )}
+
+                    <Button type="submit" className="w-full mt-4">
+                      <Plus className="mr-2 size-4" />
+                      Agregar Movimiento
+                    </Button>
+                  </div>
+                </div>
               </form>
             </DialogContent>
           </Dialog>
@@ -848,11 +1179,43 @@ export default function Home() {
                       <TableRow key={movimiento.id}>
                         <TableCell className="font-medium">{movimiento.fecha}</TableCell>
                         <TableCell className="text-right font-medium">
-                          $
-                          {movimiento.capitalInvertido.toLocaleString("es-AR", {
-                            minimumFractionDigits: 2,
-                            maximumFractionDigits: 2,
-                          })}
+                          <div className="flex items-center justify-end gap-2">
+                            {movimiento.participaciones && movimiento.participaciones.length > 0 && (
+                              <HoverCard>
+                                <HoverCardTrigger asChild>
+                                  <Users className="size-4 text-muted-foreground cursor-help" />
+                                </HoverCardTrigger>
+                                <HoverCardContent className="w-80">
+                                  <div className="space-y-2">
+                                    <h4 className="text-sm font-semibold">Participantes del Pool</h4>
+                                    <div className="text-sm">
+                                      {movimiento.participaciones.map((p) => {
+                                        const gananciaParticipante = (p.monto_invertido / movimiento.capitalInvertido) * movimiento.ganancia
+                                        return (
+                                          <div key={p.id} className="flex justify-between py-1 border-b last:border-0">
+                                            <span>{p.nombre}</span>
+                                            <div className="text-right">
+                                              <div>${p.monto_invertido.toLocaleString("es-AR")}</div>
+                                              <div className={`text-xs ${gananciaParticipante >= 0 ? "text-green-500" : "text-red-500"}`}>
+                                                {gananciaParticipante >= 0 ? "+" : ""}${gananciaParticipante.toLocaleString("es-AR", { maximumFractionDigits: 2 })}
+                                              </div>
+                                            </div>
+                                          </div>
+                                        )
+                                      })}
+                                    </div>
+                                  </div>
+                                </HoverCardContent>
+                              </HoverCard>
+                            )}
+                            <span>
+                              $
+                              {movimiento.capitalInvertido.toLocaleString("es-AR", {
+                                minimumFractionDigits: 2,
+                                maximumFractionDigits: 2,
+                              })}
+                            </span>
+                          </div>
                         </TableCell>
                         <TableCell className="text-right">
                           $
@@ -925,6 +1288,14 @@ export default function Home() {
                         </TableCell>
                         <TableCell className="text-right">
                           <div className="flex items-center justify-end gap-1">
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              onClick={() => verDetalles(movimiento)}
+                              title="Ver detalles y distribución"
+                            >
+                              <FileText className="size-4 text-blue-500" />
+                            </Button>
                             <Button
                               variant="ghost"
                               size="sm"
